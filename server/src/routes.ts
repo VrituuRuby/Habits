@@ -3,6 +3,7 @@ import { prisma } from "./lib/prisma";
 
 import { z } from "zod";
 import dayjs from "dayjs";
+import { equal } from "assert";
 
 export async function appRoutes(app: FastifyInstance) {
   app.post("/habits", async (request) => {
@@ -61,5 +62,81 @@ export async function appRoutes(app: FastifyInstance) {
       possibleHabits,
       completedHabits,
     };
+  });
+
+  app.patch("/habits/:habit_id/toggle", async (request) => {
+    const getRouteParam = z.object({
+      habit_id: z.string().uuid(),
+    });
+
+    const { habit_id } = getRouteParam.parse(request.params);
+
+    const habit = await prisma.habit.findUnique({
+      where: {
+        id: habit_id,
+      },
+    });
+
+    if (!habit) throw new Error("Habit doesn't exist");
+
+    const today = dayjs().startOf("day").toDate();
+
+    //Checks if there is a day with an already existing habit or creates a new day if it's the first
+    let day = await prisma.day.findUnique({ where: { date: today } });
+    if (!day) {
+      day = await prisma.day.create({
+        data: {
+          date: today,
+        },
+      });
+    }
+
+    const dayHabit = await prisma.dayHabit.findUnique({
+      where: {
+        day_id_habit_id: {
+          day_id: day.id,
+          habit_id,
+        },
+      },
+    });
+
+    if (dayHabit) {
+      await prisma.dayHabit.delete({ where: { id: dayHabit.id } });
+    }
+    //Complete Habit
+    else
+      await prisma.dayHabit.create({
+        data: {
+          day_id: day.id,
+          habit_id,
+        },
+      });
+  });
+
+  app.get("/summary", async () => {
+    const summary = await prisma.$queryRaw`
+      SELECT 
+        D.id,
+        D.date,
+        (
+          SELECT 
+            cast(count(*) as float) 
+          FROM day_habits DH
+          WHERE DH.day_id = D.id
+        ) as completed,
+        (
+          SELECT
+            cast(count(*) as float)
+          FROM habit_week_days HWD
+          JOIN habits H
+            ON H.id = HWD.habit_id
+          WHERE 
+            HWD.week_day = cast(strftime('%w', D.date/1000.0, 'unixepoch') as int)
+            AND H.created_at <= D.date
+        ) as amount
+      FROM days D
+    `;
+
+    return summary;
   });
 }
